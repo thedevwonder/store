@@ -4,7 +4,7 @@ import sequelize from "./db.config.js";
 import MODELS from "./models.js";
 
 class Report {
-  async getUpTimeLastHour(storeId) {
+  async getUpTimeLastHour(storeId, probability) {
     try {
       const till = moment().format("YYYY-MM-DD HH:mm");
       const from = moment().clone().startOf("hour").format("YYYY-MM-DD HH:mm");
@@ -41,6 +41,8 @@ class Report {
             "minutes"
           );
         }
+      } else {
+        upTime = diff * probability;
       }
       const result = {
         upTime,
@@ -53,99 +55,109 @@ class Report {
     }
   }
 
-  async getAccuracyFactor(storeId, date) {
+  async getUpDateLastWeek(storeId, probability) {
     try {
-      const timezone = await sequelize.query(
-        "select * from store_timezones where store_id = ?",
-        {
-          replacements: [storeId],
-        }
+      const till = moment()
+        .endOf("week")
+        .subtract(7, "days")
+        .format("YYYY-MM-DD HH:mm");
+      const from = moment()
+        .startOf("week")
+        .subtract(7, "days")
+        .format("YYYY-MM-DD HH:mm");
+      const diff = moment(till, "YYYY-MM-DD HH:mm").diff(
+        moment(from, "YYYY-MM-DD HH:mm"),
+        "hours"
       );
-      const dayOfWeek = moment(date).day();
-      const storeOnlineTime = await sequelize.query(
-        "select * from menu_hours where store_id = ? and day = ?",
+      const lastWeekData = await sequelize.query(
+        "select * from store_status where store_id = ? and time1 >= ? and time1 <= ? order by time1",
         {
-          replacements: [storeId, dayOfWeek],
+          replacements: [storeId, from, till],
           type: QueryTypes.SELECT,
         }
       );
-      const timeRange = [];
-      let totalStoreOnlineTime = 0;
-      if (storeOnlineTime.length > 0) {
-        storeOnlineTime.forEach((data) => {
-          let diff = moment(data.end_time, "HH:mm:ss").diff(
-            moment(data.start_time, "HH:mm:ss"),
-            "minutes"
-          );
-          totalStoreOnlineTime += diff;
-          timeRange.push({
-            startTime: moment(date + " " + data.start_time).format(
-              "YYYY-MM-DD HH:mm:ss"
-            ),
-            endTime: moment(date + " " + data.end_time).format(
-              "YYYY-MM-DD HH:mm:ss"
-            ),
-          });
-        });
-      } else {
-        totalStoreOnlineTime = 24 * 60;
-        timeRange.push({
-          startTime: date + " " + "00:00:00",
-          endTime: date + " " + "23:59:00",
-        });
-      }
-      let actualStoreOnlineTime = 0;
-      console.log(timeRange, "TIME RANGE");
-      timeRange.forEach(async (data) => {
-        const storeStatus = await sequelize.query(
-          `select * from store_status where store_id = ? and CONVERT_TZ(time1, 'UTC', ?) >= ? and CONVERT_TZ(time1, 'UTC', ?) <= ?`,
-          {
-            replacements: [storeId, data.startTime, data.endTime],
-            type: QueryTypes.SELECT,
-          }
-        );
-
-        if (storeStatus.length > 0) {
-          if (storeStatus[0].status == "active") {
-            actualStoreOnlineTime += moment(storeStatus[0].time1).diff(
-              moment(data.startTime),
-              "minutes"
-            );
-          }
-          for (let i = 0; i < storeStatus.length; i++) {
-            if (
-              storeStatus[i].status == "active" &&
-              storeStatus[i + 1].status == "active"
-            ) {
-              actualStoreOnlineTime += moment(storeStatus[i + 1].time1).diff(
-                moment(storeStatus[i].time1),
-                "minutes"
-              );
-            }
-          }
-          if (storeStatus[storeStatus.length - 1].status == "active") {
-            actualStoreOnlineTime += moment(data.endTime).diff(
-              moment(storeStatus[storeStatus.length - 1].time1),
+      let upTime = 0;
+      if (lastWeekData.length > 0) {
+        if (lastWeekData[0].status == "active") {
+          upTime += moment(lastWeekData[0].time1).diff(moment(from), "hours");
+        }
+        for (let i = 0; i < lastWeekData.length - 1; i++) {
+          if (
+            lastWeekData[i].status == "active" &&
+            lastWeekData[i + 1].status == "active"
+          ) {
+            upTime += moment(lastWeekData[i + 1].time1).diff(
+              moment(lastWeekData[i].time1),
               "minutes"
             );
           }
         }
-        console.log(storeStatus, "STORE STATUS");
-      });
-
-      let accuracyFactor = actualStoreOnlineTime / totalStoreOnlineTime;
-      console.log(accuracyFactor);
-
-      return accuracyFactor;
+        if (lastHourData[lastWeekData.length - 1].status == "active") {
+          upTime += moment(till).diff(
+            moment(lastWeekData[lastWeekData.length - 1].time1),
+            "minutes"
+          );
+        }
+        upTime = upTime / 60;
+      } else {
+        upTime = diff * probability;
+      }
+      const result = {
+        upTime,
+        downTime: diff - upTime,
+      };
+      return result;
     } catch (error) {
       console.log(error);
     }
   }
 
-  changeTimeZone(timeZone) {
+  async getProbability(storeId) {
     try {
-      console.log(moment().tz(timeZone).format("YYYY-MM-DD HH:mm"));
-      console.log(moment().clone().startOf("hour").format("YYYY-MM-DD HH:mm"));
+      const [timezoneResponse] = await sequelize.query(
+        "select * from store_timezones where store_id = ?",
+        {
+          replacements: [storeId],
+        }
+      );
+      const timezone =
+        timezoneResponse.length > 0
+          ? timezoneResponse[0].timezone
+          : "America/Chicago";
+
+      const storeStatusData = await sequelize.query(
+        `select * from store_status where store_id = ? ORDER BY time1`,
+        {
+          replacements: [storeId],
+          type: QueryTypes.SELECT,
+        }
+      );
+      let activeCount = 0;
+      let totalCount = 0;
+      for (let i = 0; i < storeStatusData.length; i++) {
+        const convertedTime = moment(
+          storeStatusData[i].time1,
+          "YYYY-MM-DD HH:mm"
+        )
+          .tz(timezone)
+          .format("YYYY-MM-DD HH:mm");
+        const day = moment(convertedTime).isoWeek() - 1;
+        const storeOpeningResponse = await sequelize.query(
+          "select * from menu_hours where store_id = ? and day = ? and start_time <= ? and end_time >= ?",
+          {
+            replacements: [storeId, day, convertedTime, convertedTime],
+            type: QueryTypes.SELECT,
+          }
+        );
+        if (storeOpeningResponse.length > 0) {
+          if (storeStatusData[i].status == "active") {
+            activeCount++;
+          }
+          totalCount++;
+        }
+      }
+      const probability = activeCount / totalCount;
+      return probability;
     } catch (error) {
       console.log(error);
     }
@@ -197,13 +209,25 @@ class Report {
 
       await Promise.all(
         storeArr.map(async (data) => {
-          const { upTime, downTime } = await this.getUpTimeLastHour(
-            data.store_id
+          const probability = await this.getProbability(data.store_id);
+          const lastHour = await this.getUpTimeLastHour(
+            data.store_id,
+            probability
+          );
+          const lasWeek = await this.getUpDateLastWeek(
+            data.store_id,
+            probability
           );
           await sequelize.query(
-            "INSERT INTO store_results (store_id, uptime_last_hour, downtime_last_hour) values (?, ?, ?) ON DUPLICATE KEY UPDATE uptime_last_hour=VALUES(uptime_last_hour), downtime_last_hour=VALUES(downtime_last_hour)",
+            "INSERT INTO store_results (store_id, uptime_last_hour, downtime_last_hour, update_last_week, downtime_last_week) values (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE uptime_last_hour=VALUES(uptime_last_hour), downtime_last_hour=VALUES(downtime_last_hour), update_last_week=VALUES(update_last_week), downtime_last_week=VALUES(downtime_last_week)",
             {
-              replacements: [data.store_id, upTime, downTime],
+              replacements: [
+                data.store_id,
+                lastHour.upTime,
+                lastHour.downTime,
+                lasWeek.upTime,
+                lasWeek.downTime,
+              ],
               type: QueryTypes.INSERT,
             }
           );
@@ -236,4 +260,5 @@ class Report {
 }
 
 const report = new Report();
+await report.generateReport("1481966498820158979");
 export default report;
