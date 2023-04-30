@@ -15,3 +15,7 @@ Taking all of these into account, we calculate a mean probability that could hel
 
 3. find the probability of the store getting online by using above method.
 4. Generate the report using json2csv parser and send a GET API link to the client which will directly download the csv on local system.
+
+
+**Reference**
+The overall system is very similar to Redash an open source tool, I have used in my current company and the inner workings of Redash are pretty much the same.
