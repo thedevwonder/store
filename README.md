@@ -18,4 +18,5 @@ Taking all of these into account, we calculate a mean probability that could hel
 
 
 **Reference**
+
 The overall system is very similar to Redash an open source tool, I have used in my current company and the inner workings of Redash are pretty much the same.
